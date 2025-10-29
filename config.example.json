@@ -1,0 +1,22 @@
+{
+    "target_dir": "/path/to/your/web/files",
+    "integrity_file": "/path/to/logs/integrity.txt",
+    "log_file": "/path/to/logs/integrity.log",
+    "email": "your_email@example.com",
+
+    "from_email": "alerts@example.com",
+    
+    "email_method": "mailcmd",
+    
+    "smtp_server": "smtp.example.com",
+    "smtp_port": "587",
+    "smtp_user": "smtp_username",
+    "smtp_pass": "smtp_password",
+
+    "whitelist": [
+        "*.tmp",
+        "cache/*",
+        "/path/to/your/web/files/temp/*",
+        "test.php"
+    ]
+} 
