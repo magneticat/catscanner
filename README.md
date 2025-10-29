@@ -146,9 +146,10 @@ For regular monitoring, add to crontab:
 ## Security Considerations
 
 1. Store the integrity and log files outside the web root
-2. Use a dedicated email account for notifications
-3. Keep the config file secure (contains SMTP credentials)
-4. Regular updates of the integrity file after legitimate changes
+2. Disable write permissions on the integrity file after its generation
+3. Use a dedicated email account for notifications
+4. Keep the config file secure (contains SMTP credentials)
+5. Regular updates of the integrity file after legitimate changes
 
 ## Contributing
 
