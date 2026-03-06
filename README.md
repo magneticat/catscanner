@@ -107,6 +107,10 @@ Edit `config.json` to match your environment:
 }
 ```
 
+### Integrity File Format
+
+The integrity file stores one line per monitored file: `SHA256_HASH  /path/to/file` (two spaces between hash and path). This format is stable for parsing and integration with other tools.
+
 ### Configuration Options
 
 | Option | Description |
@@ -141,6 +145,8 @@ Examples:
 ```
 
 ## Email Notification Methods
+
+To disable notifications (e.g., for CI or local testing), set `email_method` to `""` or omit it. The scanner will log changes but skip email delivery.
 
 ### 1. Local Mail Command
 
@@ -210,6 +216,8 @@ chmod +x test_integrity.sh
 
 The script: regenerates the integrity file, scans (no changes), creates a test file, scans again (detects new file), removes the test file, scans again (detects removal), then prints the log and cleans up.
 
+> **Note:** The script removes the built `catscanner` binary on exit. Rebuild with `go build -o catscanner` if you need it afterward.
+
 ### Operational Runbook
 
 | Scenario | Action |
@@ -219,6 +227,7 @@ The script: regenerates the integrity file, scans (no changes), creates a test f
 | Scan fails with "Failed to read integrity file" | Run `-r` to regenerate; the integrity file may be missing or corrupted. |
 | No email received | Check `email_method`, SMTP/mailcmd config, and the log file for errors. |
 | False positives from cache/temp | Add patterns to `whitelist` in `config.json`. |
+| CI pipeline integration | Use `-config` to point at a generated config; set `email_method` to `""` to skip notifications. |
 
 ## Security Considerations
 
