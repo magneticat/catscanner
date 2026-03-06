@@ -116,7 +116,7 @@ Edit `config.json` to match your environment:
 | `log_file` | File to store scan logs |
 | `email` | Email address for notifications (To) |
 | `from_email` | Optional explicit From address for notifications |
-| `email_method` | Email method (`"smtp"` or `"mailcmd"`) |
+| `email_method` | Email method (`"smtp"` or `"mailcmd"`). Omit or leave empty for log-only mode (no notifications). |
 | `smtp_*` | SMTP server configuration |
 | `whitelist` | Array of patterns to exclude from notifications |
 
@@ -141,6 +141,10 @@ Examples:
 ```
 
 ## Email Notification Methods
+
+### Log-only mode
+
+If `email_method` is omitted, empty, or invalid, catscanner runs normally but skips email notifications. Changes are still logged to `log_file`. Use this for testing or when you only need local logging.
 
 ### 1. Local Mail Command
 
@@ -208,7 +212,7 @@ chmod +x test_integrity.sh
 ./test_integrity.sh
 ```
 
-The script: regenerates the integrity file, scans (no changes), creates a test file, scans again (detects new file), removes the test file, scans again (detects removal), then prints the log and cleans up.
+The script: regenerates the integrity file, scans (no changes), creates a test file, scans again (detects new file), removes the test file, scans again (no changes, since the test file was never in the baseline), then prints the log and cleans up. It removes the temporary directory and the built binary on exit; rebuild with `go build -o catscanner` if you need the binary afterward.
 
 ### Operational Runbook
 
