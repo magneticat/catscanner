@@ -143,6 +143,30 @@ For regular monitoring, add to crontab:
 - If using `mailcmd`, verify the local MTA is configured to relay mail externally; otherwise messages may remain local or be rejected.
 - Check the application log file for detailed SMTP or mail command error messages.
 
+## Development and Testing
+
+### Running Tests
+
+A test script (`test_integrity.sh`) demonstrates the full workflow. **Before running:** edit the script to use your own `target_dir` and log paths, or ensure `config.json` points to valid directories. The script uses hardcoded paths (`/path/to/your/...`) by default.
+
+```bash
+# Build and run the test script (adjust paths in the script first)
+chmod +x test_integrity.sh
+./test_integrity.sh
+```
+
+The script: regenerates the integrity file, scans (no changes), creates a test file, scans again (detects new file), removes the test file, scans again (detects removal).
+
+### Operational Runbook
+
+| Scenario | Action |
+|----------|--------|
+| First deployment | Run `./catscanner -r -ext ".php,.html,.js"` to create the initial integrity baseline. |
+| Legitimate file changes | After deploying updates, run `-r` again to refresh the baseline. |
+| Scan fails with "Failed to read integrity file" | Run `-r` to regenerate; the integrity file may be missing or corrupted. |
+| No email received | Check `email_method`, SMTP/mailcmd config, and the log file for errors. |
+| False positives from cache/temp | Add patterns to `whitelist` in `config.json`. |
+
 ## Security Considerations
 
 1. Store the integrity and log files outside the web root
@@ -204,31 +228,20 @@ Edit the `config.json` file to match your environment:
 
 ### Whitelist Patterns
 
-The whitelist feature allows you to specify files or patterns that should not trigger email notifications when changed. Changes to whitelisted files are still logged but won't generate alerts. Patterns support standard glob syntax:
+The whitelist feature allows you to specify files or patterns that should not trigger email notifications when changed. Changes to whitelisted files are still logged but won't generate alerts. Patterns use Go's `filepath.Match` syntax:
 
 - `*`: Matches any sequence of characters except path separators
 - `?`: Matches any single character except path separator
 - `[abc]`: Matches one character given in the bracket
-- `**`: Matches zero or more directories
+
+**Note:** `**` (globstar) is not supported. Patterns are matched against both the filename and the full path.
 
 Examples:
 ```json
 "whitelist": [
     "*.tmp",           // Ignore all .tmp files
     "cache/*",         // Ignore everything in the cache directory
-    "**/temp/**",      // Ignore files in any temp directory
     "test.php",        // Ignore a specific file
     "/full/path/*"     // Ignore files in a specific directory (full path)
 ]
 ```
-
-## SMTP/Mail Troubleshooting
-
-- Ensure your SMTP port matches the server capability:
-  - 587: STARTTLS (what this tool uses with `smtp.SendMail` if supported)
-  - 465: Implicit TLS (not supported by `smtp.SendMail`; use 587 instead)
-- Many providers require a valid From header that matches the authenticated user. Set `from_email` to your mailbox, or leave it empty to default to `smtp_user`.
-- Some providers (e.g., Gmail) require an App Password or OAuth; normal password may fail.
-- Make sure DNS for the From domain has proper SPF/DMARC to avoid spam/bounces.
-- If using `mailcmd`, verify the local MTA is configured to relay mail externally; otherwise messages may remain local or be rejected.
-- Check the application log file for detailed SMTP or mail command error messages. 
