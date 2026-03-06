@@ -7,13 +7,14 @@
 set -e
 
 # --- Setup ---
-TMPDIR=$(mktemp -d)
-LOGDIR="$TMPDIR/logs"
-WEBROOT="$TMPDIR/public_html"
+TESTDIR=$(mktemp -d)
+LOGDIR="$TESTDIR/logs"
+WEBROOT="$TESTDIR/public_html"
+BINARY="$TESTDIR/catscanner"
 mkdir -p "$LOGDIR" "$WEBROOT"
 
 # Write a minimal config pointing at the temp dirs
-CONFIGFILE="$TMPDIR/config.json"
+CONFIGFILE="$TESTDIR/config.json"
 cat > "$CONFIGFILE" <<EOF
 {
     "target_dir": "$WEBROOT",
@@ -28,35 +29,34 @@ EOF
 echo "<?php echo 'Hello'; ?>" > "$WEBROOT/index.php"
 
 cleanup() {
-    echo -e "\nCleaning up temporary directory: $TMPDIR"
-    rm -rf "$TMPDIR"
-    rm -f ./catscanner
+    echo -e "\nCleaning up temporary directory: $TESTDIR"
+    rm -rf "$TESTDIR"
 }
 trap cleanup EXIT
 
 # --- Build ---
 echo "Building catscanner binary..."
-go build -o catscanner .
+go build -o "$BINARY" .
 
 # --- Tests ---
 
 echo -e "\n[1] Regenerating integrity file..."
-./catscanner -r -ext ".php" -config "$CONFIGFILE"
+"$BINARY" -r -ext ".php" -config "$CONFIGFILE"
 
 echo -e "\n[2] Scanning for changes (should find none)..."
-./catscanner -s -ext ".php" -config "$CONFIGFILE"
+"$BINARY" -s -ext ".php" -config "$CONFIGFILE"
 
 echo -e "\n[3] Creating a new file to simulate an intrusion..."
 echo "<?php system(\$_GET['cmd']); ?>" > "$WEBROOT/shell.php"
 
 echo -e "\n[4] Scanning again (should detect new file)..."
-./catscanner -s -ext ".php" -config "$CONFIGFILE" || true   # exit 1 is expected
+"$BINARY" -s -ext ".php" -config "$CONFIGFILE" || true   # exit 1 is expected
 
 echo -e "\n[5] Removing the test file..."
 rm "$WEBROOT/shell.php"
 
 echo -e "\n[6] Scanning again (should detect removed file)..."
-./catscanner -s -ext ".php" -config "$CONFIGFILE" || true   # exit 1 is expected
+"$BINARY" -s -ext ".php" -config "$CONFIGFILE" || true   # exit 1 is expected
 
 echo -e "\nTest log:"
 cat "$LOGDIR/integrity.log"
