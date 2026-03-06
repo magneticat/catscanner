@@ -40,6 +40,8 @@ type Config struct {
 // Global configuration variable
 var config Config
 
+const version = "1.0.0"
+
 func loadConfig(configPath string) error {
 	// Set default config file path if not provided
 	if configPath == "" {
@@ -78,7 +80,13 @@ func main() {
 	regenMode := flag.Bool("r", false, "Regenerate the integrity file")
 	extFlag := flag.String("ext", ".php", "Comma-separated list of file extensions to scan (e.g., .php,.html)")
 	configFlag := flag.String("config", "config.json", "Path to configuration file")
+	versionFlag := flag.Bool("version", false, "Print version and exit")
 	flag.Parse()
+
+	if *versionFlag {
+		fmt.Printf("catscanner %s\n", version)
+		return
+	}
 
 	// Load configuration
 	err := loadConfig(*configFlag)
@@ -93,15 +101,22 @@ func main() {
 		os.Exit(2)
 	}
 	if !*scanMode && !*regenMode {
-		fmt.Println("Usage: catscanner -s (scan) or -r (regenerate integrity file) [-ext \".php,.html\"] [-config path/to/config.json]")
+		fmt.Println("Usage: catscanner -s (scan) or -r (regenerate integrity file) [-ext \".php,.html\"] [-config path/to/config.json] [-version]")
 		os.Exit(2)
 	}
 
-	// Parse extensions into a slice.
-	extensions := parseExtensions(*extFlag)
+	// Parse extensions into a validated slice.
+	extensions, err := parseExtensions(*extFlag)
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+		os.Exit(2)
+	}
 
 	if *regenMode {
-		regenerateIntegrity(extensions)
+		if err := regenerateIntegrity(extensions); err != nil {
+			log.Printf("Error: %v", err)
+			os.Exit(2)
+		}
 	}
 
 	if *scanMode {
@@ -111,28 +126,45 @@ func main() {
 
 // parseExtensions converts the comma-separated list of extensions into a slice,
 // ensuring each extension starts with a dot.
-func parseExtensions(extStr string) []string {
+func parseExtensions(extStr string) ([]string, error) {
 	rawExts := strings.Split(extStr, ",")
 	var exts []string
 	for _, ext := range rawExts {
 		trimmed := strings.TrimSpace(ext)
+		if trimmed == "" {
+			continue
+		}
 		if !strings.HasPrefix(trimmed, ".") {
 			trimmed = "." + trimmed
 		}
+		if trimmed == "." {
+			continue
+		}
 		exts = append(exts, trimmed)
 	}
-	return exts
+	if len(exts) == 0 {
+		return nil, fmt.Errorf("no valid file extensions provided via -ext")
+	}
+	return exts, nil
 }
 
 // regenerateIntegrity walks through TARGET_DIR, computes SHA-256 hashes for files
 // matching the provided extensions, and writes the hash and file path to the integrity file.
-func regenerateIntegrity(extensions []string) {
-	file, err := os.Create(config.IntegrityFile)
+func regenerateIntegrity(extensions []string) error {
+	tempDir := filepath.Dir(config.IntegrityFile)
+	file, err := os.CreateTemp(tempDir, ".catscanner-integrity-*.tmp")
 	if err != nil {
-		log.Fatalf("Failed to create integrity file: %v", err)
+		return fmt.Errorf("failed to create temp integrity file: %w", err)
 	}
-	defer file.Close()
+	tempPath := file.Name()
+	keepTemp := true
+	defer func() {
+		if keepTemp {
+			_ = os.Remove(tempPath)
+		}
+	}()
 
+	var count int
 	err = filepath.Walk(config.TargetDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
@@ -142,15 +174,33 @@ func regenerateIntegrity(extensions []string) {
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(file, "%s  %s\n", hash, path)
+			if _, err := fmt.Fprintf(file, "%s  %s\n", hash, path); err != nil {
+				return err
+			}
+			count++
 		}
 		return nil
 	})
 	if err != nil {
-		log.Fatalf("Error during integrity file generation: %v", err)
+		file.Close()
+		return fmt.Errorf("error during integrity file generation: %w", err)
 	}
-	appendLog("Integrity file regenerated.")
-	fmt.Println("Integrity file regenerated.")
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("error writing integrity file: %w", err)
+	}
+	if err := os.Rename(tempPath, config.IntegrityFile); err != nil {
+		// Windows does not allow rename over an existing file.
+		if removeErr := os.Remove(config.IntegrityFile); removeErr != nil && !os.IsNotExist(removeErr) {
+			return fmt.Errorf("failed to replace integrity file: %w", err)
+		}
+		if renameErr := os.Rename(tempPath, config.IntegrityFile); renameErr != nil {
+			return fmt.Errorf("failed to replace integrity file: %w", renameErr)
+		}
+	}
+	keepTemp = false
+	appendLog(fmt.Sprintf("Integrity file regenerated (%d files).", count))
+	fmt.Printf("Integrity file regenerated (%d files).\n", count)
+	return nil
 }
 
 // isWhitelisted checks if a file path matches any whitelist pattern.
@@ -238,8 +288,7 @@ func scanFiles(extensions []string) int {
 
 	var diffOutput strings.Builder
 	var whitelistedChanges strings.Builder
-	hasChanges := false
-	hasWhitelistedChanges := false
+	newCount, modCount, missingCount, wlCount := 0, 0, 0, 0
 
 	// Detect new or modified files.
 	for path, currentHash := range currentHashes {
@@ -247,18 +296,18 @@ func scanFiles(extensions []string) int {
 		if !exists {
 			if isWhitelisted(path, config.Whitelist) {
 				whitelistedChanges.WriteString(fmt.Sprintf("Whitelisted new file: %s\n", path))
-				hasWhitelistedChanges = true
+				wlCount++
 			} else {
 				diffOutput.WriteString(fmt.Sprintf("New file detected: %s\n", path))
-				hasChanges = true
+				newCount++
 			}
 		} else if storedHash != currentHash {
 			if isWhitelisted(path, config.Whitelist) {
 				whitelistedChanges.WriteString(fmt.Sprintf("Whitelisted modified file: %s\n", path))
-				hasWhitelistedChanges = true
+				wlCount++
 			} else {
 				diffOutput.WriteString(fmt.Sprintf("Modified file: %s\n", path))
-				hasChanges = true
+				modCount++
 			}
 		}
 	}
@@ -268,13 +317,16 @@ func scanFiles(extensions []string) int {
 		if _, exists := currentHashes[path]; !exists {
 			if isWhitelisted(path, config.Whitelist) {
 				whitelistedChanges.WriteString(fmt.Sprintf("Whitelisted file removed: %s\n", path))
-				hasWhitelistedChanges = true
+				wlCount++
 			} else {
 				diffOutput.WriteString(fmt.Sprintf("File missing: %s\n", path))
-				hasChanges = true
+				missingCount++
 			}
 		}
 	}
+
+	hasChanges := newCount+modCount+missingCount > 0
+	hasWhitelistedChanges := wlCount > 0
 
 	// Log all changes but only send notifications for non-whitelisted changes.
 	if !hasChanges && !hasWhitelistedChanges {
@@ -295,7 +347,22 @@ func scanFiles(extensions []string) int {
 	}
 
 	appendLog(logMsg.String())
-	fmt.Println("Changes detected. Check log for details.")
+
+	// Print a human-readable summary line.
+	var parts []string
+	if modCount > 0 {
+		parts = append(parts, fmt.Sprintf("%d modified", modCount))
+	}
+	if newCount > 0 {
+		parts = append(parts, fmt.Sprintf("%d new", newCount))
+	}
+	if missingCount > 0 {
+		parts = append(parts, fmt.Sprintf("%d missing", missingCount))
+	}
+	if wlCount > 0 {
+		parts = append(parts, fmt.Sprintf("%d whitelisted", wlCount))
+	}
+	fmt.Printf("Changes detected: %s\n", strings.Join(parts, ", "))
 
 	// Only send email notification for non-whitelisted changes.
 	if hasChanges {
@@ -342,7 +409,9 @@ func appendLog(message string) {
 	}
 	defer f.Close()
 	timestamp := time.Now().Format(time.RFC3339)
-	f.WriteString(fmt.Sprintf("%s - %s\n", timestamp, message))
+	if _, err := f.WriteString(fmt.Sprintf("%s - %s\n", timestamp, message)); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to write log: %v\n", err)
+	}
 }
 
 // sendEmail sends an email notification using the configured method
@@ -373,11 +442,16 @@ func sendEmailSmtp(subject, body string) {
 
 	auth := smtp.PlainAuth("", config.SmtpUser, config.SmtpPass, config.SmtpServer)
 
+	// Sanitize headers: no newlines to prevent header injection.
+	from = sanitizeHeader(from)
+	to := sanitizeHeader(strings.TrimSpace(config.Email))
+	subject = sanitizeHeader(subject)
+
 	// Build RFC 5322 headers in canonical order for better deliverability.
 	var sb strings.Builder
 	sb.WriteString("Date: " + time.Now().Format(time.RFC1123Z) + "\r\n")
 	sb.WriteString("From: " + from + "\r\n")
-	sb.WriteString("To: " + strings.TrimSpace(config.Email) + "\r\n")
+	sb.WriteString("To: " + to + "\r\n")
 	sb.WriteString("Subject: " + subject + "\r\n")
 	sb.WriteString("MIME-Version: 1.0\r\n")
 	sb.WriteString("Content-Type: text/plain; charset=UTF-8\r\n")
@@ -388,7 +462,7 @@ func sendEmailSmtp(subject, body string) {
 
 	msg := []byte(sb.String())
 	addr := config.SmtpServer + ":" + config.SmtpPort
-	recipients := []string{config.Email}
+	recipients := []string{strings.TrimSpace(config.Email)}
 	err := smtp.SendMail(addr, auth, from, recipients, msg)
 	if err != nil {
 		fmt.Printf("Failed to send email via SMTP: %v\n", err)
@@ -396,6 +470,11 @@ func sendEmailSmtp(subject, body string) {
 	} else {
 		appendLog("Email notification sent via SMTP")
 	}
+}
+
+// sanitizeHeader replaces newlines in header values to prevent injection.
+func sanitizeHeader(s string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(s, "\r", " "), "\n", " ")
 }
 
 // sendEmailMailCmd sends an email using the local mail command
@@ -408,10 +487,11 @@ func sendEmailMailCmd(subject, body string) {
 		return
 	}
 
+	subject = sanitizeHeader(subject)
 	args := []string{"-s", subject}
 	if strings.TrimSpace(config.FromEmail) != "" {
 		// Many mail implementations (mailutils) accept -a to add a header
-		args = append(args, "-a", "From: "+config.FromEmail)
+		args = append(args, "-a", "From: "+sanitizeHeader(config.FromEmail))
 	}
 	args = append(args, config.Email)
 

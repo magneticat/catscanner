@@ -45,19 +45,23 @@ Repository: [magneticat/catscanner](https://github.com/magneticat/catscanner.git
 
 ### Generate Initial Integrity File
 
-Before scanning for changes, generate an initial integrity file:
+Before scanning for changes, generate an initial integrity file. The integrity file is written atomically (via a temporary file then rename), so a crash during generation will not corrupt the existing baseline.
 
 ```bash
-./catscanner -r -ext ".php,.html,.js"
+./catscanner -r -ext ".php,.html,.js" -config config.json
 ```
+
+On success you'll see: `Integrity file regenerated (N files).`
 
 ### Scan for Changes
 
 To check for file modifications:
 
 ```bash
-./catscanner -s -ext ".php,.html,.js"
+./catscanner -s -ext ".php,.html,.js" -config config.json
 ```
+
+When changes are detected, the program prints a summary such as: `Changes detected: 2 modified, 1 new, 1 whitelisted.` Details are always written to the log file.
 
 ### Command Line Options
 
@@ -65,22 +69,27 @@ To check for file modifications:
 |------|-------------|
 | `-r` | Regenerate the integrity file |
 | `-s` | Scan for changes |
-| `-ext` | Comma-separated list of file extensions to scan (default: `.php`) |
+| `-ext` | Comma-separated list of file extensions to scan (default: `.php`). Extensions may omit the leading dot (e.g. `php` becomes `.php`). Empty or invalid (e.g. only commas/spaces) causes exit 2. |
 | `-config` | Path to configuration file (default: `config.json`) |
+| `-version` | Print program version and exit |
 
 > **Note:** `-r` and `-s` are mutually exclusive. Use one at a time.
 
 ### Exit Codes
 
-When running in scan mode (`-s`), the binary exits with:
-
 | Code | Meaning |
 |------|---------|
-| `0` | No changes detected |
-| `1` | Changes detected |
-| `2` | Error (missing integrity file, scan failure, etc.) |
+| `0` | Success: no changes detected (scan) or integrity file regenerated (regen). |
+| `1` | Changes detected (scan mode only). |
+| `2` | Error: invalid usage (`-s` and `-r` both/neither), config/load failure, invalid or empty `-ext`, regeneration failure, missing integrity file, or scan failure. |
 
 This makes catscanner easy to compose in shell scripts and CI pipelines.
+
+### Version
+
+```bash
+./catscanner -version
+```
 
 ## Configuration
 
@@ -214,9 +223,10 @@ The script: regenerates the integrity file, scans (no changes), creates a test f
 
 | Scenario | Action |
 |----------|--------|
-| First deployment | Run `./catscanner -r -ext ".php,.html,.js"` to create the initial integrity baseline. |
+| First deployment | Run `./catscanner -r -ext ".php,.html,.js" -config config.json` to create the initial integrity baseline. |
 | Legitimate file changes | After deploying updates, run `-r` again to refresh the baseline. |
-| Scan fails with "Failed to read integrity file" | Run `-r` to regenerate; the integrity file may be missing or corrupted. |
+| Scan fails with "Failed to read integrity file" (or missing file) | Run `-r` to regenerate; the integrity file may be missing or corrupted. |
+| Error: "no valid file extensions provided via -ext" | Provide at least one non-empty extension in `-ext` (e.g. `-ext ".php,.html"`). |
 | No email received | Check `email_method`, SMTP/mailcmd config, and the log file for errors. |
 | False positives from cache/temp | Add patterns to `whitelist` in `config.json`. |
 
@@ -227,6 +237,7 @@ The script: regenerates the integrity file, scans (no changes), creates a test f
 3. Use a dedicated email account for notifications
 4. Keep the config file secure (contains SMTP credentials)
 5. Regenerate the integrity file after every legitimate deployment
+6. Email headers (From, To, Subject) are sanitized to prevent header injection when using SMTP or the mail command
 
 ## Contributing
 
