@@ -76,6 +76,8 @@ func main() {
 	// Define command line flags.
 	scanMode := flag.Bool("s", false, "Scan for file changes")
 	regenMode := flag.Bool("r", false, "Regenerate the integrity file")
+	dryRunMode := flag.Bool("n", false, "Dry run: list files that would be scanned, without hashing")
+	quietFlag := flag.Bool("q", false, "Quiet mode: suppress stdout output (exit code only)")
 	extFlag := flag.String("ext", ".php", "Comma-separated list of file extensions to scan (e.g., .php,.html)")
 	configFlag := flag.String("config", "config.json", "Path to configuration file")
 	flag.Parse()
@@ -86,27 +88,60 @@ func main() {
 		log.Fatalf("Error loading configuration: %v", err)
 	}
 
-	// Exactly one mode must be specified; both together would scan a freshly-
-	// regenerated file and trivially find no changes, which is misleading.
-	if *scanMode && *regenMode {
-		fmt.Println("Error: -s and -r are mutually exclusive. Use one at a time.")
-		os.Exit(2)
+	// Exactly one of -s, -r, -n must be specified.
+	modeCount := 0
+	if *scanMode {
+		modeCount++
 	}
-	if !*scanMode && !*regenMode {
-		fmt.Println("Usage: catscanner -s (scan) or -r (regenerate integrity file) [-ext \".php,.html\"] [-config path/to/config.json]")
+	if *regenMode {
+		modeCount++
+	}
+	if *dryRunMode {
+		modeCount++
+	}
+	if modeCount != 1 {
+		fmt.Println("Error: -s, -r, and -n are mutually exclusive. Use one at a time.")
 		os.Exit(2)
 	}
 
 	// Parse extensions into a slice.
 	extensions := parseExtensions(*extFlag)
 
+	if *dryRunMode {
+		dryRunFiles(extensions, *quietFlag)
+		return
+	}
 	if *regenMode {
-		regenerateIntegrity(extensions)
+		regenerateIntegrity(extensions, *quietFlag)
+		return
 	}
-
 	if *scanMode {
-		os.Exit(scanFiles(extensions))
+		os.Exit(scanFiles(extensions, *quietFlag))
 	}
+}
+
+// dryRunFiles walks TARGET_DIR and prints file paths that match the given extensions.
+// No hashing or file writes. Paths go to stdout (one per line); summary count to stderr.
+func dryRunFiles(extensions []string, quiet bool) {
+	var paths []string
+	err := filepath.Walk(config.TargetDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() && hasValidExtension(info.Name(), extensions) {
+			paths = append(paths, path)
+		}
+		return nil
+	})
+	if err != nil {
+		log.Fatalf("Error during dry run: %v", err)
+	}
+	if !quiet {
+		for _, p := range paths {
+			fmt.Println(p)
+		}
+	}
+	fmt.Fprintf(os.Stderr, "%d file(s) would be scanned\n", len(paths))
 }
 
 // parseExtensions converts the comma-separated list of extensions into a slice,
@@ -126,7 +161,7 @@ func parseExtensions(extStr string) []string {
 
 // regenerateIntegrity walks through TARGET_DIR, computes SHA-256 hashes for files
 // matching the provided extensions, and writes the hash and file path to the integrity file.
-func regenerateIntegrity(extensions []string) {
+func regenerateIntegrity(extensions []string, quiet bool) {
 	file, err := os.Create(config.IntegrityFile)
 	if err != nil {
 		log.Fatalf("Failed to create integrity file: %v", err)
@@ -150,7 +185,9 @@ func regenerateIntegrity(extensions []string) {
 		log.Fatalf("Error during integrity file generation: %v", err)
 	}
 	appendLog("Integrity file regenerated.")
-	fmt.Println("Integrity file regenerated.")
+	if !quiet {
+		fmt.Println("Integrity file regenerated.")
+	}
 }
 
 // isWhitelisted checks if a file path matches any whitelist pattern.
@@ -196,7 +233,7 @@ func isWhitelisted(path string, whitelist []string) bool {
 // scanFiles loads the stored integrity file, rescans files in TARGET_DIR that match the provided extensions,
 // compares the computed hashes with the stored values, logs discrepancies, and sends an email if needed.
 // Returns exit code: 0 = clean, 1 = changes detected, 2 = error.
-func scanFiles(extensions []string) int {
+func scanFiles(extensions []string, quiet bool) int {
 	// Load stored integrity data.
 	storedHashes := make(map[string]string)
 	content, err := os.ReadFile(config.IntegrityFile)
@@ -279,7 +316,9 @@ func scanFiles(extensions []string) int {
 	// Log all changes but only send notifications for non-whitelisted changes.
 	if !hasChanges && !hasWhitelistedChanges {
 		appendLog("No changes detected.")
-		fmt.Println("No changes detected.")
+		if !quiet {
+			fmt.Println("No changes detected.")
+		}
 		return 0
 	}
 
@@ -295,7 +334,9 @@ func scanFiles(extensions []string) int {
 	}
 
 	appendLog(logMsg.String())
-	fmt.Println("Changes detected. Check log for details.")
+	if !quiet {
+		fmt.Println("Changes detected. Check log for details.")
+	}
 
 	// Only send email notification for non-whitelisted changes.
 	if hasChanges {

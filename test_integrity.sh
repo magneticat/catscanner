@@ -73,10 +73,13 @@ echo "<?php system(\$_GET['cmd']); ?>" > "$WEBROOT/shell.php"
 echo -e "\n[9] Scanning again (should detect new file)..."
 ./catscanner -s -ext ".php" -config "$CONFIGFILE" || true   # exit 1 is expected
 
-echo -e "\n[10] Removing the test file..."
+echo -e "\n[10] Re-regenerating to include shell.php in baseline..."
+./catscanner -r -ext ".php" -config "$CONFIGFILE"
+
+echo -e "\n[11] Removing the test file..."
 rm "$WEBROOT/shell.php"
 
-echo -e "\n[11] Scanning again (should detect removed file)..."
+echo -e "\n[12] Scanning again (should detect removed file)..."
 ./catscanner -s -ext ".php" -config "$CONFIGFILE" || true   # exit 1 is expected
 
 echo -e "\nTest log:"
