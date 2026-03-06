@@ -59,16 +59,28 @@ To check for file modifications:
 ./catscanner -s -ext ".php,.html,.js"
 ```
 
+### Dry Run
+
+To preview which files match your extension filter (no hashing, no writes):
+
+```bash
+./catscanner -n -ext ".php,.html,.js"
+```
+
+File paths are printed to stdout (one per line) and a summary count goes to stderr, so you can pipe the list while still seeing the total.
+
 ### Command Line Options
 
 | Flag | Description |
 |------|-------------|
 | `-r` | Regenerate the integrity file |
 | `-s` | Scan for changes |
+| `-n` | Dry run: list files that would be scanned, without hashing |
+| `-q` | Quiet mode: suppress stdout output (exit code only) |
 | `-ext` | Comma-separated list of file extensions to scan (default: `.php`) |
 | `-config` | Path to configuration file (default: `config.json`) |
 
-> **Note:** `-r` and `-s` are mutually exclusive. Use one at a time.
+> **Note:** `-r`, `-s`, and `-n` are mutually exclusive. Use one at a time. The `-q` flag can be combined with any mode.
 
 ### Exit Codes
 
@@ -208,7 +220,7 @@ chmod +x test_integrity.sh
 ./test_integrity.sh
 ```
 
-The script: regenerates the integrity file, scans (no changes), creates a test file, scans again (detects new file), removes the test file, scans again (detects removal), then prints the log and cleans up.
+The script tests the full workflow: dry-run listing, regeneration, clean scan, quiet-mode suppression, file modification detection, new-file detection, and file-removal detection — then prints the log and cleans up.
 
 ### Operational Runbook
 
