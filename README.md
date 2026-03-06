@@ -39,27 +39,7 @@ Repository: [magneticat/catscanner](https://github.com/magneticat/catscanner.git
    cp config.example.json config.json
    ```
 
-4. Edit `config.json` to match your environment:
-   ```json
-   {
-       "target_dir": "/path/to/your/web/files",
-       "integrity_file": "/path/to/logs/integrity.txt",
-       "log_file": "/path/to/logs/integrity.log",
-       "email": "your_email@example.com",
-       "from_email": "alerts@example.com",
-       "email_method": "mailcmd",
-       "smtp_server": "smtp.example.com",
-       "smtp_port": "587",
-       "smtp_user": "smtp_username",
-       "smtp_pass": "smtp_password",
-       "whitelist": [
-           "*.tmp",
-           "cache/*",
-           "/path/to/your/web/files/temp/*",
-           "test.php"
-       ]
-   }
-   ```
+4. Edit `config.json` to match your environment (see [Configuration](#configuration) below).
 
 ## Usage
 
@@ -81,10 +61,84 @@ To check for file modifications:
 
 ### Command Line Options
 
-- `-r`: Regenerate the integrity file
-- `-s`: Scan for changes
-- `-ext`: Comma-separated list of file extensions to scan (default: ".php")
-- `-config`: Path to configuration file (default: "config.json")
+| Flag | Description |
+|------|-------------|
+| `-r` | Regenerate the integrity file |
+| `-s` | Scan for changes |
+| `-ext` | Comma-separated list of file extensions to scan (default: `.php`) |
+| `-config` | Path to configuration file (default: `config.json`) |
+
+> **Note:** `-r` and `-s` are mutually exclusive. Use one at a time.
+
+### Exit Codes
+
+When running in scan mode (`-s`), the binary exits with:
+
+| Code | Meaning |
+|------|---------|
+| `0` | No changes detected |
+| `1` | Changes detected |
+| `2` | Error (missing integrity file, scan failure, etc.) |
+
+This makes catscanner easy to compose in shell scripts and CI pipelines.
+
+## Configuration
+
+Edit `config.json` to match your environment:
+
+```json
+{
+    "target_dir": "/path/to/your/web/files",
+    "integrity_file": "/path/to/logs/integrity.txt",
+    "log_file": "/path/to/logs/integrity.log",
+    "email": "your_email@example.com",
+    "from_email": "alerts@example.com",
+    "email_method": "mailcmd",
+    "smtp_server": "smtp.example.com",
+    "smtp_port": "587",
+    "smtp_user": "smtp_username",
+    "smtp_pass": "smtp_password",
+    "whitelist": [
+        "*.tmp",
+        "cache/*",
+        "/path/to/your/web/files/temp/*",
+        "test.php"
+    ]
+}
+```
+
+### Configuration Options
+
+| Option | Description |
+|--------|-------------|
+| `target_dir` | Directory to monitor for changes |
+| `integrity_file` | File to store file hashes |
+| `log_file` | File to store scan logs |
+| `email` | Email address for notifications (To) |
+| `from_email` | Optional explicit From address for notifications |
+| `email_method` | Email method (`"smtp"` or `"mailcmd"`) |
+| `smtp_*` | SMTP server configuration |
+| `whitelist` | Array of patterns to exclude from notifications |
+
+### Whitelist Patterns
+
+The whitelist lets you exclude known-changing files (caches, temp files) from triggering alerts. Changes to whitelisted files are still logged but won't generate email notifications. Patterns use Go's `filepath.Match` syntax and are matched against the filename, full path, and every trailing sub-path:
+
+- `*` — any sequence of characters except path separators
+- `?` — any single character except path separator
+- `[abc]` — one character in the bracket set
+
+> **Note:** `**` (globstar) is not supported.
+
+Examples:
+```json
+"whitelist": [
+    "*.tmp",                         // Ignore all .tmp files
+    "cache/*",                       // Ignore everything inside a cache/ directory
+    "test.php",                      // Ignore a specific file by name
+    "/full/path/to/specific/file"    // Ignore one file by absolute path
+]
+```
 
 ## Email Notification Methods
 
@@ -135,27 +189,26 @@ For regular monitoring, add to crontab:
 ## SMTP/Mail Troubleshooting
 
 - Ensure your SMTP port matches the server capability:
-  - 587: STARTTLS (what this tool uses with `smtp.SendMail` if supported)
-  - 465: Implicit TLS (not supported by `smtp.SendMail`; use 587 instead)
+  - 587: STARTTLS (recommended, used by `smtp.SendMail`)
+  - 465: Implicit TLS (not supported; use 587 instead)
 - Many providers require a valid From header that matches the authenticated user. Set `from_email` to your mailbox, or leave it empty to default to `smtp_user`.
-- Some providers (e.g., Gmail) require an App Password or OAuth; normal password may fail.
-- Make sure DNS for the From domain has proper SPF/DMARC to avoid spam/bounces.
-- If using `mailcmd`, verify the local MTA is configured to relay mail externally; otherwise messages may remain local or be rejected.
+- Some providers (e.g., Gmail) require an App Password or OAuth; a normal password may fail.
+- Make sure the From domain has proper SPF/DMARC records to avoid spam filtering.
+- If using `mailcmd`, verify the local MTA is configured to relay mail externally.
 - Check the application log file for detailed SMTP or mail command error messages.
 
 ## Development and Testing
 
 ### Running Tests
 
-A test script (`test_integrity.sh`) demonstrates the full workflow. **Before running:** edit the script to use your own `target_dir` and log paths, or ensure `config.json` points to valid directories. The script uses hardcoded paths (`/path/to/your/...`) by default.
+The test script (`test_integrity.sh`) demonstrates the full workflow and is fully self-contained — it creates a temporary directory, runs all scenarios, and cleans up after itself. No configuration needed.
 
 ```bash
-# Build and run the test script (adjust paths in the script first)
 chmod +x test_integrity.sh
 ./test_integrity.sh
 ```
 
-The script: regenerates the integrity file, scans (no changes), creates a test file, scans again (detects new file), removes the test file, scans again (detects removal).
+The script: regenerates the integrity file, scans (no changes), creates a test file, scans again (detects new file), removes the test file, scans again (detects removal), then prints the log and cleans up.
 
 ### Operational Runbook
 
@@ -170,10 +223,10 @@ The script: regenerates the integrity file, scans (no changes), creates a test f
 ## Security Considerations
 
 1. Store the integrity and log files outside the web root
-2. Disable write permissions on the integrity file after its generation
+2. Disable write permissions on the integrity file after generation
 3. Use a dedicated email account for notifications
 4. Keep the config file secure (contains SMTP credentials)
-5. Regular updates of the integrity file after legitimate changes
+5. Regenerate the integrity file after every legitimate deployment
 
 ## Contributing
 
@@ -187,61 +240,3 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 - Inspired by the need for a simple, efficient file integrity monitoring solution
 - Built with Go's standard library for minimal dependencies
-
-## Configuration
-
-Edit the `config.json` file to match your environment:
-
-```json
-{
-    "target_dir": "/path/to/your/web/files",
-    "integrity_file": "/path/to/logs/integrity.txt",
-    "log_file": "/path/to/logs/integrity.log",
-    "email": "your_email@example.com",
-    "from_email": "alerts@example.com",
-    "email_method": "mailcmd",
-    "smtp_server": "smtp.example.com",
-    "smtp_port": "587",
-    "smtp_user": "smtp_username",
-    "smtp_pass": "smtp_password",
-    "whitelist": [
-        "*.tmp",
-        "cache/*",
-        "/path/to/your/web/files/temp/*",
-        "test.php"
-    ]
-}
-```
-
-### Configuration Options
-
-| Option | Description |
-|--------|-------------|
-| `target_dir` | Directory to monitor for changes |
-| `integrity_file` | File to store file hashes |
-| `log_file` | File to store scan logs |
-| `email` | Email address for notifications (To) |
-| `from_email` | Optional explicit From address for notifications |
-| `email_method` | Email method ("smtp" or "mailcmd") |
-| `smtp_*` | SMTP server configuration |
-| `whitelist` | Array of patterns to exclude from notifications |
-
-### Whitelist Patterns
-
-The whitelist feature allows you to specify files or patterns that should not trigger email notifications when changed. Changes to whitelisted files are still logged but won't generate alerts. Patterns use Go's `filepath.Match` syntax:
-
-- `*`: Matches any sequence of characters except path separators
-- `?`: Matches any single character except path separator
-- `[abc]`: Matches one character given in the bracket
-
-**Note:** `**` (globstar) is not supported. Patterns are matched against both the filename and the full path.
-
-Examples:
-```json
-"whitelist": [
-    "*.tmp",           // Ignore all .tmp files
-    "cache/*",         // Ignore everything in the cache directory
-    "test.php",        // Ignore a specific file
-    "/full/path/*"     // Ignore files in a specific directory (full path)
-]
-```

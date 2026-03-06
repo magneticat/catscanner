@@ -58,6 +58,17 @@ func loadConfig(configPath string) error {
 		return fmt.Errorf("failed to parse config file: %w", err)
 	}
 
+	// Validate required fields
+	if config.TargetDir == "" {
+		return fmt.Errorf("config: target_dir is required")
+	}
+	if config.IntegrityFile == "" {
+		return fmt.Errorf("config: integrity_file is required")
+	}
+	if config.LogFile == "" {
+		return fmt.Errorf("config: log_file is required")
+	}
+
 	return nil
 }
 
@@ -75,10 +86,15 @@ func main() {
 		log.Fatalf("Error loading configuration: %v", err)
 	}
 
-	// At least one flag must be specified.
+	// Exactly one mode must be specified; both together would scan a freshly-
+	// regenerated file and trivially find no changes, which is misleading.
+	if *scanMode && *regenMode {
+		fmt.Println("Error: -s and -r are mutually exclusive. Use one at a time.")
+		os.Exit(2)
+	}
 	if !*scanMode && !*regenMode {
-		fmt.Println("Usage: integrity -s (scan) or -r (regenerate integrity file) [-ext \".php,.html\"] [-config path/to/config.json]")
-		os.Exit(1)
+		fmt.Println("Usage: catscanner -s (scan) or -r (regenerate integrity file) [-ext \".php,.html\"] [-config path/to/config.json]")
+		os.Exit(2)
 	}
 
 	// Parse extensions into a slice.
@@ -89,7 +105,7 @@ func main() {
 	}
 
 	if *scanMode {
-		scanFiles(extensions)
+		os.Exit(scanFiles(extensions))
 	}
 }
 
@@ -137,17 +153,41 @@ func regenerateIntegrity(extensions []string) {
 	fmt.Println("Integrity file regenerated.")
 }
 
-// isWhitelisted checks if a file path matches any whitelist pattern
+// isWhitelisted checks if a file path matches any whitelist pattern.
+//
+// Patterns are matched against:
+//  1. The file's base name (e.g. "*.tmp" matches any .tmp file)
+//  2. The full absolute path (e.g. "/var/www/cache/foo.php")
+//  3. Every suffix sub-path of the file (e.g. "cache/foo.php", "foo.php"),
+//     so patterns like "cache/*" correctly match files inside a cache
+//     directory regardless of whether absolute or relative paths are used.
+//
+// Note: filepath.Match does not support "**" globstar.
 func isWhitelisted(path string, whitelist []string) bool {
-	for _, pattern := range whitelist {
-		matched, err := filepath.Match(pattern, filepath.Base(path))
-		if err == nil && matched {
-			return true
+	// Build a list of candidate strings to match against.
+	// Start with the cleaned path and peel off one leading segment at a time.
+	cleaned := filepath.ToSlash(filepath.Clean(path))
+	parts := strings.Split(cleaned, "/")
+
+	candidates := []string{
+		filepath.Base(path), // bare filename
+		path,                // raw path as-is
+		cleaned,             // cleaned full path
+	}
+	// Add every trailing sub-path: "a/b/c", "b/c", "c"
+	for i := range parts {
+		sub := strings.Join(parts[i:], "/")
+		if sub != "" {
+			candidates = append(candidates, sub)
 		}
-		// Also try matching the full path
-		matched, err = filepath.Match(pattern, path)
-		if err == nil && matched {
-			return true
+	}
+
+	for _, pattern := range whitelist {
+		for _, candidate := range candidates {
+			matched, err := filepath.Match(pattern, candidate)
+			if err == nil && matched {
+				return true
+			}
 		}
 	}
 	return false
@@ -155,12 +195,14 @@ func isWhitelisted(path string, whitelist []string) bool {
 
 // scanFiles loads the stored integrity file, rescans files in TARGET_DIR that match the provided extensions,
 // compares the computed hashes with the stored values, logs discrepancies, and sends an email if needed.
-func scanFiles(extensions []string) {
+// Returns exit code: 0 = clean, 1 = changes detected, 2 = error.
+func scanFiles(extensions []string) int {
 	// Load stored integrity data.
 	storedHashes := make(map[string]string)
 	content, err := os.ReadFile(config.IntegrityFile)
 	if err != nil {
-		log.Fatalf("Failed to read integrity file: %v", err)
+		log.Printf("Failed to read integrity file: %v", err)
+		return 2
 	}
 	lines := strings.Split(string(content), "\n")
 	for _, line := range lines {
@@ -190,7 +232,8 @@ func scanFiles(extensions []string) {
 		return nil
 	})
 	if err != nil {
-		log.Fatalf("Error during scanning: %v", err)
+		log.Printf("Error during scanning: %v", err)
+		return 2
 	}
 
 	var diffOutput strings.Builder
@@ -233,36 +276,42 @@ func scanFiles(extensions []string) {
 		}
 	}
 
-	// Log all changes but only send notifications for non-whitelisted changes
+	// Log all changes but only send notifications for non-whitelisted changes.
 	if !hasChanges && !hasWhitelistedChanges {
 		appendLog("No changes detected.")
 		fmt.Println("No changes detected.")
-	} else {
-		var logMsg strings.Builder
-		if hasChanges {
-			logMsg.WriteString("Discrepancies found:\n" + diffOutput.String())
-		}
-		if hasWhitelistedChanges {
-			if logMsg.Len() > 0 {
-				logMsg.WriteString("\n")
-			}
-			logMsg.WriteString("Whitelisted changes (no notification sent):\n" + whitelistedChanges.String())
-		}
-
-		appendLog(logMsg.String())
-		fmt.Println("Changes detected. Check log for details.")
-
-		// Only send email notification for non-whitelisted changes
-		if hasChanges {
-			sendEmail("PHP Integrity Alert", diffOutput.String())
-		}
+		return 0
 	}
+
+	var logMsg strings.Builder
+	if hasChanges {
+		logMsg.WriteString("Discrepancies found:\n" + diffOutput.String())
+	}
+	if hasWhitelistedChanges {
+		if logMsg.Len() > 0 {
+			logMsg.WriteString("\n")
+		}
+		logMsg.WriteString("Whitelisted changes (no notification sent):\n" + whitelistedChanges.String())
+	}
+
+	appendLog(logMsg.String())
+	fmt.Println("Changes detected. Check log for details.")
+
+	// Only send email notification for non-whitelisted changes.
+	if hasChanges {
+		// Build a dynamic subject reflecting the monitored extensions.
+		subject := fmt.Sprintf("Integrity Alert: changes detected in %s", config.TargetDir)
+		sendEmail(subject, diffOutput.String())
+		return 1
+	}
+	return 0
 }
 
-// hasValidExtension checks if the filename ends with any of the allowed extensions.
+// hasValidExtension checks if the file's extension matches any of the allowed extensions.
 func hasValidExtension(filename string, extensions []string) bool {
+	fileExt := filepath.Ext(filename)
 	for _, ext := range extensions {
-		if strings.HasSuffix(filename, ext) {
+		if fileExt == ext {
 			return true
 		}
 	}
@@ -284,10 +333,11 @@ func computeHash(filePath string) (string, error) {
 }
 
 // appendLog writes a message to the log file with a timestamp.
+// Errors are reported to stderr so they surface in cron/systemd output.
 func appendLog(message string) {
 	f, err := os.OpenFile(config.LogFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
-		fmt.Printf("Failed to write log: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Failed to write log: %v\n", err)
 		return
 	}
 	defer f.Close()
@@ -323,23 +373,15 @@ func sendEmailSmtp(subject, body string) {
 
 	auth := smtp.PlainAuth("", config.SmtpUser, config.SmtpPass, config.SmtpServer)
 
-	// Build RFC 5322 headers for better deliverability
-	headers := make(map[string]string)
-	headers["From"] = from
-	headers["To"] = config.Email
-	headers["Subject"] = subject
-	headers["MIME-Version"] = "1.0"
-	headers["Content-Type"] = "text/plain; charset=UTF-8"
-	headers["Content-Transfer-Encoding"] = "8bit"
-	headers["Date"] = time.Now().Format(time.RFC1123Z)
-
+	// Build RFC 5322 headers in canonical order for better deliverability.
 	var sb strings.Builder
-	for k, v := range headers {
-		sb.WriteString(k)
-		sb.WriteString(": ")
-		sb.WriteString(v)
-		sb.WriteString("\r\n")
-	}
+	sb.WriteString("Date: " + time.Now().Format(time.RFC1123Z) + "\r\n")
+	sb.WriteString("From: " + from + "\r\n")
+	sb.WriteString("To: " + strings.TrimSpace(config.Email) + "\r\n")
+	sb.WriteString("Subject: " + subject + "\r\n")
+	sb.WriteString("MIME-Version: 1.0\r\n")
+	sb.WriteString("Content-Type: text/plain; charset=UTF-8\r\n")
+	sb.WriteString("Content-Transfer-Encoding: 8bit\r\n")
 	sb.WriteString("\r\n")
 	sb.WriteString(body)
 	sb.WriteString("\r\n")

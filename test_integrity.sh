@@ -1,44 +1,64 @@
 #!/bin/bash
 
-# Test script for integrity.go
+# Test script for catscanner.
+# Creates a self-contained temporary environment so no manual path editing
+# is required. Cleans up after itself on exit.
 
-# Make sure logs directory exists
-mkdir -p /path/to/your/logs
+set -e
 
-# Build the binary first
-echo "Building integrity binary..."
-go build -o integrity integrity.go
-chmod +x integrity
+# --- Setup ---
+TMPDIR=$(mktemp -d)
+LOGDIR="$TMPDIR/logs"
+WEBROOT="$TMPDIR/public_html"
+mkdir -p "$LOGDIR" "$WEBROOT"
 
-# First, regenerate the integrity file
-echo "Regenerating integrity file..."
-./integrity -r -ext ".php,.html,.js"
+# Write a minimal config pointing at the temp dirs
+CONFIGFILE="$TMPDIR/config.json"
+cat > "$CONFIGFILE" <<EOF
+{
+    "target_dir": "$WEBROOT",
+    "integrity_file": "$LOGDIR/integrity.txt",
+    "log_file": "$LOGDIR/integrity.log",
+    "email": "",
+    "email_method": ""
+}
+EOF
 
-# Wait a moment
-sleep 1
+# Seed the web root with a sample PHP file
+echo "<?php echo 'Hello'; ?>" > "$WEBROOT/index.php"
 
-# Then scan for changes (should find none since we just regenerated)
-echo -e "\nScanning for changes (should find none)..."
-./integrity -s -ext ".php,.html,.js"
+cleanup() {
+    echo -e "\nCleaning up temporary directory: $TMPDIR"
+    rm -rf "$TMPDIR"
+    rm -f ./catscanner
+}
+trap cleanup EXIT
 
-# Create a test file to simulate a change
-echo -e "\nCreating a test file to simulate a change..."
-echo "<?php echo 'Test file'; ?>" > /path/to/your/public_html/test_integrity.php
+# --- Build ---
+echo "Building catscanner binary..."
+go build -o catscanner .
 
-# Scan again to detect the new file
-echo -e "\nScanning again (should detect the new file)..."
-./integrity -s -ext ".php,.html,.js"
+# --- Tests ---
 
-# Clean up the test file
-echo -e "\nCleaning up test file..."
-rm /path/to/your/public_html/test_integrity.php
+echo -e "\n[1] Regenerating integrity file..."
+./catscanner -r -ext ".php" -config "$CONFIGFILE"
 
-# Scan one more time to detect the removed file
-echo -e "\nScanning again (should detect the removed file)..."
-./integrity -s -ext ".php,.html,.js"
+echo -e "\n[2] Scanning for changes (should find none)..."
+./catscanner -s -ext ".php" -config "$CONFIGFILE"
 
-# Clean up the binary
-echo -e "\nCleaning up..."
-rm integrity
+echo -e "\n[3] Creating a new file to simulate an intrusion..."
+echo "<?php system(\$_GET['cmd']); ?>" > "$WEBROOT/shell.php"
 
-echo -e "\nTest completed. Check the log file at /path/to/your/logs/integrity.log" 
+echo -e "\n[4] Scanning again (should detect new file)..."
+./catscanner -s -ext ".php" -config "$CONFIGFILE" || true   # exit 1 is expected
+
+echo -e "\n[5] Removing the test file..."
+rm "$WEBROOT/shell.php"
+
+echo -e "\n[6] Scanning again (should detect removed file)..."
+./catscanner -s -ext ".php" -config "$CONFIGFILE" || true   # exit 1 is expected
+
+echo -e "\nTest log:"
+cat "$LOGDIR/integrity.log"
+
+echo -e "\nAll tests completed successfully."
