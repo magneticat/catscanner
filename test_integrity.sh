@@ -1,44 +1,40 @@
 #!/bin/bash
 
-# Test script for integrity.go
+# Test script for catscanner (integrity.go)
+# Before running: ensure config.json exists and points to valid target_dir, integrity_file, and log_file.
+# Override TARGET_DIR and CONFIG via env if needed; TARGET_DIR must match config.json target_dir.
 
-# Make sure logs directory exists
-mkdir -p /home/sammyboy/logs
+TARGET_DIR="${TARGET_DIR:-/path/to/your/web/files}"
+CONFIG="${CONFIG:-config.json}"
 
-# Build the binary first
-echo "Building integrity binary..."
-go build -o integrity integrity.go
-chmod +x integrity
+# Ensure target_dir exists for the test file
+mkdir -p "$TARGET_DIR"
 
-# First, regenerate the integrity file
+echo "Building catscanner binary..."
+go build -o catscanner integrity.go
+chmod +x catscanner
+
 echo "Regenerating integrity file..."
-./integrity -r -ext ".php,.html,.js"
+./catscanner -r -ext ".php,.html,.js" -config "$CONFIG"
 
-# Wait a moment
 sleep 1
 
-# Then scan for changes (should find none since we just regenerated)
 echo -e "\nScanning for changes (should find none)..."
-./integrity -s -ext ".php,.html,.js"
+./catscanner -s -ext ".php,.html,.js" -config "$CONFIG"
 
-# Create a test file to simulate a change
 echo -e "\nCreating a test file to simulate a change..."
-echo "<?php echo 'Test file'; ?>" > /home/sammyboy/public_html/test_integrity.php
+echo "<?php echo 'Test file'; ?>" > "$TARGET_DIR/test_integrity.php"
 
-# Scan again to detect the new file
 echo -e "\nScanning again (should detect the new file)..."
-./integrity -s -ext ".php,.html,.js"
+./catscanner -s -ext ".php,.html,.js" -config "$CONFIG"
 
-# Clean up the test file
 echo -e "\nCleaning up test file..."
-rm /home/sammyboy/public_html/test_integrity.php
+rm "$TARGET_DIR/test_integrity.php"
 
-# Scan one more time to detect the removed file
 echo -e "\nScanning again (should detect the removed file)..."
-./integrity -s -ext ".php,.html,.js"
+./catscanner -s -ext ".php,.html,.js" -config "$CONFIG"
 
-# Clean up the binary
 echo -e "\nCleaning up..."
-rm integrity
+rm catscanner
 
-echo -e "\nTest completed. Check the log file at /home/sammyboy/logs/integrity.log" 
+echo -e "\nTest completed. Check the log file configured in $CONFIG" 

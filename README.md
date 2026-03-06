@@ -54,9 +54,9 @@ Repository: [magneticat/catscanner](https://github.com/magneticat/catscanner.git
        "smtp_pass": "smtp_password",
        "whitelist": [
            "*.tmp",
-           "cache/*",
-           "/path/to/your/web/files/temp/*",
-           "test.php"
+           "test.php",
+           "/path/to/your/web/files/cache/*",
+           "/path/to/your/web/files/temp/*"
        ]
    }
    ```
@@ -147,15 +147,18 @@ For regular monitoring, add to crontab:
 
 ### Running Tests
 
-A test script (`test_integrity.sh`) demonstrates the full workflow. **Before running:** edit the script to use your own `target_dir` and log paths, or ensure `config.json` points to valid directories. The script uses hardcoded paths (`/home/sammyboy/...`) by default.
+A test script (`test_integrity.sh`) demonstrates the full workflow. **Before running:** ensure `config.json` exists and points to valid `target_dir`, `integrity_file`, and `log_file`. You can override paths via environment variables:
 
 ```bash
-# Build and run the test script (adjust paths in the script first)
+# Use config.json paths (default)
 chmod +x test_integrity.sh
 ./test_integrity.sh
+
+# Or override target and log dir for the test file
+TARGET_DIR=/var/www/html LOG_DIR=/var/log/catscanner ./test_integrity.sh
 ```
 
-The script: regenerates the integrity file, scans (no changes), creates a test file, scans again (detects new file), removes the test file, scans again (detects removal).
+The script: builds `catscanner`, regenerates the integrity file, scans (no changes), creates a test file, scans again (detects new file), removes the test file, scans again (detects removal).
 
 ### Operational Runbook
 
@@ -206,9 +209,9 @@ Edit the `config.json` file to match your environment:
     "smtp_pass": "smtp_password",
     "whitelist": [
         "*.tmp",
-        "cache/*",
-        "/path/to/your/web/files/temp/*",
-        "test.php"
+        "test.php",
+        "/path/to/your/web/files/cache/*",
+        "/path/to/your/web/files/temp/*"
     ]
 }
 ```
@@ -236,12 +239,13 @@ The whitelist feature allows you to specify files or patterns that should not tr
 
 **Note:** `**` (globstar) is not supported. Patterns are matched against both the filename and the full path.
 
+**Important:** `*` does not cross path separators. A pattern like `cache/*` matches only a single path segment (e.g. `cache/foo.txt` as a relative path), not nested paths like `/var/www/cache/subdir/file.txt`. To whitelist a directory and its contents, use the full path: `/path/to/target_dir/cache/*`.
+
 Examples:
 ```json
 "whitelist": [
-    "*.tmp",           // Ignore all .tmp files
-    "cache/*",         // Ignore everything in the cache directory
+    "*.tmp",           // Ignore all .tmp files (matches filename)
     "test.php",        // Ignore a specific file
-    "/full/path/*"     // Ignore files in a specific directory (full path)
+    "/path/to/your/web/files/cache/*"   // Ignore files in cache (use full path)
 ]
 ```
