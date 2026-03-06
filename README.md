@@ -111,14 +111,14 @@ Edit `config.json` to match your environment:
 
 | Option | Description |
 |--------|-------------|
-| `target_dir` | Directory to monitor for changes |
-| `integrity_file` | File to store file hashes |
-| `log_file` | File to store scan logs |
-| `email` | Email address for notifications (To) |
+| `target_dir` | **Required.** Directory to monitor for changes |
+| `integrity_file` | **Required.** File to store file hashes |
+| `log_file` | **Required.** File to store scan logs |
+| `email` | Email address for notifications (To). Optional if no notifications needed. |
 | `from_email` | Optional explicit From address for notifications |
-| `email_method` | Email method (`"smtp"` or `"mailcmd"`) |
-| `smtp_*` | SMTP server configuration |
-| `whitelist` | Array of patterns to exclude from notifications |
+| `email_method` | Email method (`"smtp"` or `"mailcmd"`). If empty or invalid, scans run but no notifications are sent. |
+| `smtp_*` | SMTP server configuration (required when `email_method` is `"smtp"`) |
+| `whitelist` | Array of patterns to exclude from notifications (optional) |
 
 ### Whitelist Patterns
 
@@ -139,6 +139,10 @@ Examples:
     "/full/path/to/specific/file"    // Ignore one file by absolute path
 ]
 ```
+
+### Integrity File Format
+
+The integrity file stores one line per monitored file: `SHA256_HASH  /full/path/to/file` (two spaces between hash and path). The format is compatible with `sha256sum -c` for manual verification.
 
 ## Email Notification Methods
 
@@ -208,7 +212,7 @@ chmod +x test_integrity.sh
 ./test_integrity.sh
 ```
 
-The script: regenerates the integrity file, scans (no changes), creates a test file, scans again (detects new file), removes the test file, scans again (detects removal), then prints the log and cleans up.
+The script: builds the binary, regenerates the integrity file, scans (no changes), creates a test file, scans again (detects new file), removes the test file, scans again (returns to baseline; no changes), then prints the log and cleans up. It uses a generated config with empty email settings, so no notifications are sent.
 
 ### Operational Runbook
 
@@ -223,7 +227,7 @@ The script: regenerates the integrity file, scans (no changes), creates a test f
 ## Security Considerations
 
 1. Store the integrity and log files outside the web root
-2. Disable write permissions on the integrity file after generation
+2. Disable write permissions on the integrity file after generation (e.g. `chmod 444 /path/to/integrity.txt`)
 3. Use a dedicated email account for notifications
 4. Keep the config file secure (contains SMTP credentials)
 5. Regenerate the integrity file after every legitimate deployment
