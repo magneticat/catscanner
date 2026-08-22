@@ -13,10 +13,12 @@
     "smtp_user": "smtp_username",
     "smtp_pass": "smtp_password",
 
+    "exclude_dirs": [],
+
     "whitelist": [
         "*.tmp",
         "cache/*",
         "/path/to/your/web/files/temp/*",
         "test.php"
     ]
-} 
+}

@@ -22,7 +22,9 @@ type Config struct {
 	IntegrityFile string   `json:"integrity_file"`
 	LogFile       string   `json:"log_file"`
 	Email         string   `json:"email"`
-	Whitelist     []string `json:"whitelist"` // Patterns to ignore for notifications
+	Whitelist     []string `json:"whitelist"`    // Patterns to ignore for notifications
+	ExcludeDirs   []string `json:"exclude_dirs"` // Target-relative directories to skip entirely
+	absTarget     string   // resolved TargetDir; set at load time, not serialized
 
 	// Optional explicit From address for notifications
 	FromEmail string `json:"from_email"`
@@ -40,7 +42,7 @@ type Config struct {
 // Global configuration variable
 var config Config
 
-const version = "1.0.0"
+const version = "1.1.0"
 
 func loadConfig(configPath string) error {
 	// Set default config file path if not provided
@@ -54,23 +56,38 @@ func loadConfig(configPath string) error {
 		return fmt.Errorf("failed to read config file: %w", err)
 	}
 
-	// Parse JSON
-	err = json.Unmarshal(data, &config)
+	// Parse JSON into a local value so a validation failure does not leave
+	// a partially applied global configuration.
+	var cfg Config
+	err = json.Unmarshal(data, &cfg)
 	if err != nil {
 		return fmt.Errorf("failed to parse config file: %w", err)
 	}
 
 	// Validate required fields
-	if config.TargetDir == "" {
+	if cfg.TargetDir == "" {
 		return fmt.Errorf("config: target_dir is required")
 	}
-	if config.IntegrityFile == "" {
+	if cfg.IntegrityFile == "" {
 		return fmt.Errorf("config: integrity_file is required")
 	}
-	if config.LogFile == "" {
+	if cfg.LogFile == "" {
 		return fmt.Errorf("config: log_file is required")
 	}
 
+	absTarget, err := filepath.Abs(cfg.TargetDir)
+	if err != nil {
+		return fmt.Errorf("config: target_dir is invalid: %w", err)
+	}
+	cfg.absTarget = filepath.Clean(absTarget)
+
+	normalized, err := parseExcludeDirs(cfg.ExcludeDirs, cfg.TargetDir)
+	if err != nil {
+		return err
+	}
+	cfg.ExcludeDirs = normalized
+
+	config = cfg
 	return nil
 }
 
@@ -88,10 +105,11 @@ func main() {
 		return
 	}
 
-	// Load configuration
+	// Load configuration. Failures are usage/config errors (exit 2).
 	err := loadConfig(*configFlag)
 	if err != nil {
-		log.Fatalf("Error loading configuration: %v", err)
+		log.Printf("Error loading configuration: %v", err)
+		os.Exit(2)
 	}
 
 	// Exactly one mode must be specified; both together would scan a freshly-
@@ -124,15 +142,19 @@ func main() {
 	}
 }
 
-// parseExtensions converts the comma-separated list of extensions into a slice,
-// ensuring each extension starts with a dot.
+// parseExtensions converts the comma-separated list of extensions into a
+// lowercased, de-duplicated slice. Each extension starts with a dot.
 func parseExtensions(extStr string) ([]string, error) {
 	rawExts := strings.Split(extStr, ",")
+	seen := make(map[string]struct{})
 	var exts []string
 	for _, ext := range rawExts {
-		trimmed := strings.TrimSpace(ext)
+		trimmed := strings.ToLower(strings.TrimSpace(ext))
 		if trimmed == "" {
 			continue
+		}
+		if strings.ContainsAny(trimmed, `/\`) {
+			return nil, fmt.Errorf("invalid file extension: %q", trimmed)
 		}
 		if !strings.HasPrefix(trimmed, ".") {
 			trimmed = "." + trimmed
@@ -140,12 +162,70 @@ func parseExtensions(extStr string) ([]string, error) {
 		if trimmed == "." {
 			continue
 		}
+		if _, ok := seen[trimmed]; ok {
+			continue
+		}
+		seen[trimmed] = struct{}{}
 		exts = append(exts, trimmed)
 	}
 	if len(exts) == 0 {
 		return nil, fmt.Errorf("no valid file extensions provided via -ext")
 	}
 	return exts, nil
+}
+
+// parseExcludeDirs validates optional target-relative directory exclusions.
+// Empty omit/empty lists are allowed. Entries are normalized and de-duplicated.
+func parseExcludeDirs(entries []string, targetDir string) ([]string, error) {
+	if len(entries) == 0 {
+		return nil, nil
+	}
+
+	absTarget, err := filepath.Abs(targetDir)
+	if err != nil {
+		return nil, fmt.Errorf("config: target_dir is invalid: %w", err)
+	}
+	absTarget = filepath.Clean(absTarget)
+
+	var result []string
+	seen := make(map[string]struct{})
+	for _, entry := range entries {
+		trimmed := strings.TrimSpace(entry)
+		if trimmed == "" {
+			return nil, fmt.Errorf("config: exclude_dirs contains an empty entry")
+		}
+
+		// JSON configs use forward slashes; accept them on every OS.
+		normalized := filepath.Clean(filepath.FromSlash(trimmed))
+
+		if normalized == "." {
+			return nil, fmt.Errorf("config: exclude_dirs entry %q is not allowed", entry)
+		}
+		// Reject OS-absolute paths and slash-absolute forms such as "/foo",
+		// which filepath.IsAbs does not treat as absolute on Windows.
+		if filepath.IsAbs(trimmed) || filepath.IsAbs(normalized) || filepath.VolumeName(normalized) != "" || strings.HasPrefix(filepath.ToSlash(trimmed), "/") {
+			return nil, fmt.Errorf("config: exclude_dirs entry %q must be a relative path", entry)
+		}
+		if normalized == ".." || strings.HasPrefix(normalized, ".."+string(os.PathSeparator)) {
+			return nil, fmt.Errorf("config: exclude_dirs entry %q escapes target_dir", entry)
+		}
+
+		joined := filepath.Join(absTarget, normalized)
+		rel, err := filepath.Rel(absTarget, joined)
+		if err != nil {
+			return nil, fmt.Errorf("config: exclude_dirs entry %q is invalid: %w", entry, err)
+		}
+		rel = filepath.Clean(rel)
+		if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) || filepath.IsAbs(rel) {
+			return nil, fmt.Errorf("config: exclude_dirs entry %q escapes target_dir", entry)
+		}
+		if _, ok := seen[rel]; ok {
+			continue
+		}
+		seen[rel] = struct{}{}
+		result = append(result, rel)
+	}
+	return result, nil
 }
 
 // regenerateIntegrity walks through TARGET_DIR, computes SHA-256 hashes for files
@@ -165,20 +245,11 @@ func regenerateIntegrity(extensions []string) error {
 	}()
 
 	var count int
-	err = filepath.Walk(config.TargetDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
+	err = walkHashedFiles(extensions, func(path, hash string) error {
+		if _, err := fmt.Fprintf(file, "%s  %s\n", hash, path); err != nil {
 			return err
 		}
-		if !info.IsDir() && hasValidExtension(info.Name(), extensions) {
-			hash, err := computeHash(path)
-			if err != nil {
-				return err
-			}
-			if _, err := fmt.Fprintf(file, "%s  %s\n", hash, path); err != nil {
-				return err
-			}
-			count++
-		}
+		count++
 		return nil
 	})
 	if err != nil {
@@ -263,22 +334,17 @@ func scanFiles(extensions []string) int {
 		if len(parts) != 2 {
 			continue
 		}
-		storedHashes[parts[1]] = parts[0]
+		storedPath := parts[1]
+		if isExcludedPath(storedPath) {
+			continue
+		}
+		storedHashes[storedPath] = parts[0]
 	}
 
 	// Scan current files.
 	currentHashes := make(map[string]string)
-	err = filepath.Walk(config.TargetDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		if !info.IsDir() && hasValidExtension(info.Name(), extensions) {
-			hash, err := computeHash(path)
-			if err != nil {
-				return err
-			}
-			currentHashes[path] = hash
-		}
+	err = walkHashedFiles(extensions, func(path, hash string) error {
+		currentHashes[path] = hash
 		return nil
 	})
 	if err != nil {
@@ -374,15 +440,117 @@ func scanFiles(extensions []string) int {
 	return 0
 }
 
-// hasValidExtension checks if the file's extension matches any of the allowed extensions.
+// hasValidExtension checks if the file's extension matches any of the allowed
+// extensions. Comparison is case-insensitive; extensions are stored lowercase.
 func hasValidExtension(filename string, extensions []string) bool {
-	fileExt := filepath.Ext(filename)
+	fileExt := strings.ToLower(filepath.Ext(filename))
 	for _, ext := range extensions {
 		if fileExt == ext {
 			return true
 		}
 	}
 	return false
+}
+
+// walkHashedFiles walks target_dir, skipping excluded directories and directory
+// symlinks, and calls visit for each regular matching file with its SHA-256 hash.
+// Unreadable files and broken symlinks are logged and skipped so one stale
+// entry cannot abort a baseline or scan.
+func walkHashedFiles(extensions []string, visit func(path, hash string) error) error {
+	return filepath.WalkDir(config.TargetDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			if path == config.TargetDir {
+				return err
+			}
+			reportSkip(path, err)
+			return nil
+		}
+		if d == nil {
+			return nil
+		}
+
+		if d.Type()&os.ModeSymlink != 0 {
+			// WalkDir uses Lstat, so a directory symlink is not a directory
+			// and is not descended into. Do not hash it as a file. Never
+			// return SkipDir here: on a non-directory, SkipDir skips
+			// remaining siblings in the parent.
+			if target, statErr := os.Stat(path); statErr != nil || target.IsDir() {
+				if statErr != nil {
+					reportSkip(path, statErr)
+				}
+				return nil
+			}
+		}
+
+		if d.IsDir() {
+			if isExcludedPath(path) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		if isExcludedPath(path) {
+			return nil
+		}
+		if !hasValidExtension(d.Name(), extensions) {
+			return nil
+		}
+		hash, err := computeHash(path)
+		if err != nil {
+			reportSkip(path, err)
+			return nil
+		}
+		return visit(path, hash)
+	})
+}
+
+func reportSkip(path string, err error) {
+	msg := fmt.Sprintf("Skipping %s: %v", path, err)
+	log.Print(msg)
+	appendLog(msg)
+}
+
+func isExcludedPath(path string) bool {
+	if len(config.ExcludeDirs) == 0 {
+		return false
+	}
+	rel, err := relativeToTarget(path)
+	if err != nil {
+		return false
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return false
+	}
+	return pathCoveredByExclude(rel)
+}
+
+func pathCoveredByExclude(rel string) bool {
+	rel = filepath.Clean(rel)
+	for _, ex := range config.ExcludeDirs {
+		if rel == ex {
+			return true
+		}
+		if strings.HasPrefix(rel, ex+string(os.PathSeparator)) {
+			return true
+		}
+	}
+	return false
+}
+
+func relativeToTarget(path string) (string, error) {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	absTarget := config.absTarget
+	if absTarget == "" {
+		absTarget, err = filepath.Abs(config.TargetDir)
+		if err != nil {
+			return "", err
+		}
+		absTarget = filepath.Clean(absTarget)
+	}
+	return filepath.Rel(absTarget, filepath.Clean(absPath))
 }
 
 // computeHash calculates the SHA-256 hash for the given file.

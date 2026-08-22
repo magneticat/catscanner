@@ -69,7 +69,7 @@ When changes are detected, the program prints a summary such as: `Changes detect
 |------|-------------|
 | `-r` | Regenerate the integrity file |
 | `-s` | Scan for changes |
-| `-ext` | Comma-separated list of file extensions to scan (default: `.php`). Extensions may omit the leading dot (e.g. `php` becomes `.php`). Empty or invalid (e.g. only commas/spaces) causes exit 2. |
+| `-ext` | Comma-separated list of file extensions to scan (default: `.php`). Matching is case-insensitive (`.php` includes `example.PHP`). Extensions may omit the leading dot (e.g. `php` becomes `.php`) and are de-duplicated after lowercasing. Empty or invalid (e.g. only commas/spaces, or a path fragment) causes exit 2. |
 | `-config` | Path to configuration file (default: `config.json`) |
 | `-version` | Print program version and exit |
 
@@ -107,6 +107,7 @@ Edit `config.json` to match your environment:
     "smtp_port": "587",
     "smtp_user": "smtp_username",
     "smtp_pass": "smtp_password",
+    "exclude_dirs": [],
     "whitelist": [
         "*.tmp",
         "cache/*",
@@ -115,6 +116,8 @@ Edit `config.json` to match your environment:
     ]
 }
 ```
+
+`exclude_dirs` is optional. If it is omitted, behavior matches earlier versions: every matching file under `target_dir` is traversed.
 
 ### Configuration Options
 
@@ -127,11 +130,42 @@ Edit `config.json` to match your environment:
 | `from_email` | Optional explicit From address for notifications |
 | `email_method` | Email method (`"smtp"` or `"mailcmd"`) |
 | `smtp_*` | SMTP server configuration |
-| `whitelist` | Array of patterns to exclude from notifications |
+| `exclude_dirs` | Optional target-relative directories to skip entirely during traversal |
+| `whitelist` | Array of patterns that still get scanned and logged, but do not send notifications |
+
+### Directory exclusions vs whitelist
+
+These settings solve different problems. Do not treat them as interchangeable.
+
+| | `exclude_dirs` | `whitelist` |
+|---|---|---|
+| Purpose | Skip bulky or high-churn directories so they are never walked | Suppress notifications for files you still want monitored |
+| Traversal | The directory and everything beneath it is pruned with `filepath.SkipDir` | Matching files are still hashed and compared |
+| Baseline | Excluded paths are omitted from a new baseline, and ignored when reading an older one | Whitelisted files remain in the baseline |
+| I/O | Reduces disk reads (useful for attachment, cache, and temp trees) | No I/O savings |
+| Alerts | Changes inside an excluded tree produce no log line and no email | Changes are logged as whitelisted; email is skipped |
+| Matching | Exact directory paths relative to `target_dir` (no globstar) | `filepath.Match` patterns against name, full path, and trailing sub-paths |
+
+Example for a XenForo-style tree:
+
+```json
+"exclude_dirs": [
+    "internal_data/attachments",
+    "internal_data/code_cache",
+    "internal_data/temp"
+]
+```
+
+Rules for `exclude_dirs`:
+
+- Paths are relative to `target_dir`. Forward slashes are accepted on every OS.
+- Empty entries, `.`, absolute paths, and any path that escapes `target_dir` via `..` are rejected (exit 2).
+- Adding an exclusion later does **not** report previously baselined files under it as missing.
+- Removing an exclusion makes those files appear as **new** until you regenerate the baseline (`-r`).
 
 ### Whitelist Patterns
 
-The whitelist lets you exclude known-changing files (caches, temp files) from triggering alerts. Changes to whitelisted files are still logged but won't generate email notifications. Patterns use Go's `filepath.Match` syntax and are matched against the filename, full path, and every trailing sub-path:
+The whitelist lets you keep scanning known-changing files (session files, a specific script) while skipping email alerts. Changes to whitelisted files are still logged. Patterns use Go's `filepath.Match` syntax and are matched against the filename, full path, and every trailing sub-path:
 
 - `*` — any sequence of characters except path separators
 - `?` — any single character except path separator
@@ -210,14 +244,19 @@ For regular monitoring, add to crontab:
 
 ### Running Tests
 
-The test script (`test_integrity.sh`) demonstrates the full workflow and is fully self-contained — it creates a temporary directory, runs all scenarios, and cleans up after itself. No configuration needed.
+Go unit and CLI tests live in `integrity_test.go` and assert exit codes plus the behaviors above (clean scan, new/modified/deleted files, case-insensitive extensions, exclusions, whitelist, and config errors).
+
+```bash
+go test ./...
+go vet ./...
+```
+
+The shell script (`test_integrity.sh`) is a self-contained integration test — it creates a temporary directory, asserts each scenario, and cleans up after itself. No configuration needed.
 
 ```bash
 chmod +x test_integrity.sh
 ./test_integrity.sh
 ```
-
-The script: regenerates the integrity file, scans (no changes), creates a test file, scans again (detects new file), removes the test file, scans again (detects removal), then prints the log and cleans up.
 
 ### Operational Runbook
 
@@ -227,8 +266,10 @@ The script: regenerates the integrity file, scans (no changes), creates a test f
 | Legitimate file changes | After deploying updates, run `-r` again to refresh the baseline. |
 | Scan fails with "Failed to read integrity file" (or missing file) | Run `-r` to regenerate; the integrity file may be missing or corrupted. |
 | Error: "no valid file extensions provided via -ext" | Provide at least one non-empty extension in `-ext` (e.g. `-ext ".php,.html"`). |
+| Error loading configuration / `exclude_dirs` rejected | Confirm the JSON is valid, required fields are set, and every `exclude_dirs` entry is a non-empty path relative to `target_dir` (not `.`, not absolute, and not escaping with `..`). Config errors exit 2. |
 | No email received | Check `email_method`, SMTP/mailcmd config, and the log file for errors. |
-| False positives from cache/temp | Add patterns to `whitelist` in `config.json`. |
+| False positives from cache/temp | If the tree should not be scanned at all, add it to `exclude_dirs`. If you still want it hashed and logged, add a `whitelist` pattern instead. |
+| Unreadable file or broken symlink | Logged as skipped; the rest of the scan or baseline continues. |
 
 ## Security Considerations
 
@@ -238,6 +279,7 @@ The script: regenerates the integrity file, scans (no changes), creates a test f
 4. Keep the config file secure (contains SMTP credentials)
 5. Regenerate the integrity file after every legitimate deployment
 6. Email headers (From, To, Subject) are sanitized to prevent header injection when using SMTP or the mail command
+7. Exclude only trees that cannot execute code. A webshell dropped in an excluded directory will never be reported.
 
 ## Contributing
 
