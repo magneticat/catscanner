@@ -188,19 +188,27 @@ run_expect 0 "whitelist scan" "$BINARY" -s -ext ".php" -config "$CONFIGFILE"
 contains "whitelist summary" "whitelisted"
 
 echo
-echo "[12] Invalid exclusion path..."
+echo "[12] Broken symlink does not abort..."
+write_config '[]' '[]'
+ln -s "$WEBROOT/missing-target.php" "$WEBROOT/broken.php"
+run_expect 0 "broken symlink regen" "$BINARY" -r -ext ".php" -config "$CONFIGFILE"
+file_lacks "broken symlink baseline" "broken.php" "$LOGDIR/integrity.txt"
+run_expect 0 "broken symlink scan" "$BINARY" -s -ext ".php" -config "$CONFIGFILE"
+
+echo
+echo "[13] Invalid exclusion path..."
 write_config '["../outside"]' '[]'
 run_expect 2 "invalid exclude" "$BINARY" -s -ext ".php" -config "$CONFIGFILE"
 
 echo
-echo "[13] Invalid extension and mode flags..."
+echo "[14] Invalid extension and mode flags..."
 write_config '[]' '[]'
 run_expect 2 "invalid ext" "$BINARY" -r -ext ",, ," -config "$CONFIGFILE"
 run_expect 2 "both modes" "$BINARY" -s -r -config "$CONFIGFILE"
 run_expect 2 "no mode" "$BINARY" -config "$CONFIGFILE"
 
 echo
-echo "[14] Configuration load error..."
+echo "[15] Configuration load error..."
 run_expect 2 "missing config" "$BINARY" -s -config "$TESTDIR/missing.json"
 
 echo

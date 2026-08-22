@@ -20,7 +20,6 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	defer os.RemoveAll(dir)
 
 	testBinary = filepath.Join(dir, "catscanner")
 	if runtime.GOOS == "windows" {
@@ -29,9 +28,12 @@ func TestMain(m *testing.M) {
 	cmd := exec.Command("go", "build", "-o", testBinary, ".")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		fmt.Fprintf(os.Stderr, "build test binary: %v\n%s", err, out)
+		os.RemoveAll(dir)
 		os.Exit(1)
 	}
-	os.Exit(m.Run())
+	code := m.Run()
+	os.RemoveAll(dir)
+	os.Exit(code)
 }
 
 func setupEnv(t *testing.T) string {
@@ -48,10 +50,15 @@ func setupEnv(t *testing.T) string {
 	if err := os.MkdirAll(logs, 0755); err != nil {
 		t.Fatal(err)
 	}
+	absTarget, err := filepath.Abs(webroot)
+	if err != nil {
+		t.Fatal(err)
+	}
 	config = Config{
 		TargetDir:     webroot,
 		IntegrityFile: filepath.Join(logs, "integrity.txt"),
 		LogFile:       filepath.Join(logs, "integrity.log"),
+		absTarget:     filepath.Clean(absTarget),
 	}
 	return webroot
 }
@@ -93,15 +100,15 @@ func captureStdout(t *testing.T, fn func()) string {
 		t.Fatal(err)
 	}
 	os.Stdout = w
+	done := make(chan string, 1)
+	go func() {
+		b, _ := io.ReadAll(r)
+		done <- string(b)
+	}()
 	fn()
 	w.Close()
 	os.Stdout = old
-	b, err := io.ReadAll(r)
-	r.Close()
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(b)
+	return <-done
 }
 
 func scan(t *testing.T, exts ...string) (string, int) {
@@ -278,6 +285,9 @@ func TestParseExcludeDirs(t *testing.T) {
 		abs := filepath.Join(target, "outside")
 		if _, err := parseExcludeDirs([]string{abs}, target); err == nil {
 			t.Fatal("expected error for absolute path")
+		}
+		if _, err := parseExcludeDirs([]string{"/foo"}, target); err == nil {
+			t.Fatal("expected error for slash-absolute path")
 		}
 	})
 
@@ -641,7 +651,18 @@ func TestCLIVersion(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("version exit %d want 0; output %q", code, out)
 	}
-	assertContains(t, out, "catscanner 1.1.0")
+	assertContains(t, out, "catscanner "+version)
+}
+
+func TestVersionFileMatchesConstant(t *testing.T) {
+	data, err := os.ReadFile("VERSION")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.TrimSpace(string(data))
+	if got != version {
+		t.Fatalf("VERSION file %q != const version %q", got, version)
+	}
 }
 
 func TestDirectorySymlinkNotFollowed(t *testing.T) {
@@ -659,4 +680,61 @@ func TestDirectorySymlinkNotFollowed(t *testing.T) {
 	body := baseline(t)
 	assertContains(t, body, "index.php")
 	assertNotContains(t, body, "secret.php")
+}
+
+func TestBrokenSymlinkDoesNotAbort(t *testing.T) {
+	web := setupEnv(t)
+	writeFile(t, filepath.Join(web, "index.php"), "ok")
+	broken := filepath.Join(web, "broken.php")
+	if err := os.Symlink(filepath.Join(web, "missing-target.php"), broken); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+
+	regen(t)
+	body := baseline(t)
+	assertContains(t, body, "index.php")
+	assertNotContains(t, body, "broken.php")
+
+	out, code := scan(t)
+	if code != 0 {
+		t.Fatalf("broken symlink should not abort scan, exit %d output %q", code, out)
+	}
+	assertContains(t, out, "No changes detected.")
+}
+
+func TestUnreadableFileDoesNotAbort(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix file permissions")
+	}
+	web := setupEnv(t)
+	writeFile(t, filepath.Join(web, "index.php"), "ok")
+	locked := filepath.Join(web, "locked.php")
+	writeFile(t, locked, "secret")
+	if err := os.Chmod(locked, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0644) })
+	if f, err := os.Open(locked); err == nil {
+		f.Close()
+		t.Skip("process can read mode-0 files (likely running as root)")
+	}
+
+	regen(t)
+	body := baseline(t)
+	assertContains(t, body, "index.php")
+	assertNotContains(t, body, "locked.php")
+
+	if err := os.Chmod(locked, 0644); err != nil {
+		t.Fatal(err)
+	}
+	regen(t)
+	assertContains(t, baseline(t), "locked.php")
+	if err := os.Chmod(locked, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	out, code := scan(t)
+	if code == 2 {
+		t.Fatalf("unreadable file should not abort scan, exit 2 output %q", out)
+	}
 }

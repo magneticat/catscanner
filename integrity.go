@@ -24,6 +24,7 @@ type Config struct {
 	Email         string   `json:"email"`
 	Whitelist     []string `json:"whitelist"`    // Patterns to ignore for notifications
 	ExcludeDirs   []string `json:"exclude_dirs"` // Target-relative directories to skip entirely
+	absTarget     string   // resolved TargetDir; set at load time, not serialized
 
 	// Optional explicit From address for notifications
 	FromEmail string `json:"from_email"`
@@ -73,6 +74,12 @@ func loadConfig(configPath string) error {
 	if cfg.LogFile == "" {
 		return fmt.Errorf("config: log_file is required")
 	}
+
+	absTarget, err := filepath.Abs(cfg.TargetDir)
+	if err != nil {
+		return fmt.Errorf("config: target_dir is invalid: %w", err)
+	}
+	cfg.absTarget = filepath.Clean(absTarget)
 
 	normalized, err := parseExcludeDirs(cfg.ExcludeDirs, cfg.TargetDir)
 	if err != nil {
@@ -194,7 +201,9 @@ func parseExcludeDirs(entries []string, targetDir string) ([]string, error) {
 		if normalized == "." {
 			return nil, fmt.Errorf("config: exclude_dirs entry %q is not allowed", entry)
 		}
-		if filepath.IsAbs(trimmed) || filepath.IsAbs(normalized) || filepath.VolumeName(normalized) != "" {
+		// Reject OS-absolute paths and slash-absolute forms such as "/foo",
+		// which filepath.IsAbs does not treat as absolute on Windows.
+		if filepath.IsAbs(trimmed) || filepath.IsAbs(normalized) || filepath.VolumeName(normalized) != "" || strings.HasPrefix(filepath.ToSlash(trimmed), "/") {
 			return nil, fmt.Errorf("config: exclude_dirs entry %q must be a relative path", entry)
 		}
 		if normalized == ".." || strings.HasPrefix(normalized, ".."+string(os.PathSeparator)) {
@@ -445,27 +454,36 @@ func hasValidExtension(filename string, extensions []string) bool {
 
 // walkHashedFiles walks target_dir, skipping excluded directories and directory
 // symlinks, and calls visit for each regular matching file with its SHA-256 hash.
+// Unreadable files and broken symlinks are logged and skipped so one stale
+// entry cannot abort a baseline or scan.
 func walkHashedFiles(extensions []string, visit func(path, hash string) error) error {
-	return filepath.Walk(config.TargetDir, func(path string, info os.FileInfo, err error) error {
+	return filepath.WalkDir(config.TargetDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
-			return err
+			if path == config.TargetDir {
+				return err
+			}
+			reportSkip(path, err)
+			return nil
 		}
-		if info == nil {
+		if d == nil {
 			return nil
 		}
 
-		if info.Mode()&os.ModeSymlink != 0 {
-			// Walk uses Lstat, so a directory symlink is not a directory and
-			// is not descended into. Do not hash it as a file. Never return
-			// SkipDir here: on a non-directory, SkipDir skips remaining
-			// siblings in the parent.
-			if target, statErr := os.Stat(path); statErr == nil && target.IsDir() {
+		if d.Type()&os.ModeSymlink != 0 {
+			// WalkDir uses Lstat, so a directory symlink is not a directory
+			// and is not descended into. Do not hash it as a file. Never
+			// return SkipDir here: on a non-directory, SkipDir skips
+			// remaining siblings in the parent.
+			if target, statErr := os.Stat(path); statErr != nil || target.IsDir() {
+				if statErr != nil {
+					reportSkip(path, statErr)
+				}
 				return nil
 			}
 		}
 
-		if info.IsDir() {
-			if shouldSkipDir(path) {
+		if d.IsDir() {
+			if isExcludedPath(path) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -474,22 +492,22 @@ func walkHashedFiles(extensions []string, visit func(path, hash string) error) e
 		if isExcludedPath(path) {
 			return nil
 		}
-		if !hasValidExtension(info.Name(), extensions) {
+		if !hasValidExtension(d.Name(), extensions) {
 			return nil
 		}
 		hash, err := computeHash(path)
 		if err != nil {
-			return err
+			reportSkip(path, err)
+			return nil
 		}
 		return visit(path, hash)
 	})
 }
 
-func shouldSkipDir(path string) bool {
-	if samePath(path, config.TargetDir) {
-		return false
-	}
-	return isExcludedPath(path)
+func reportSkip(path string, err error) {
+	msg := fmt.Sprintf("Skipping %s: %v", path, err)
+	log.Print(msg)
+	appendLog(msg)
 }
 
 func isExcludedPath(path string) bool {
@@ -524,20 +542,15 @@ func relativeToTarget(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	absTarget, err := filepath.Abs(config.TargetDir)
-	if err != nil {
-		return "", err
+	absTarget := config.absTarget
+	if absTarget == "" {
+		absTarget, err = filepath.Abs(config.TargetDir)
+		if err != nil {
+			return "", err
+		}
+		absTarget = filepath.Clean(absTarget)
 	}
-	return filepath.Rel(filepath.Clean(absTarget), filepath.Clean(absPath))
-}
-
-func samePath(a, b string) bool {
-	absA, errA := filepath.Abs(a)
-	absB, errB := filepath.Abs(b)
-	if errA != nil || errB != nil {
-		return filepath.Clean(a) == filepath.Clean(b)
-	}
-	return filepath.Clean(absA) == filepath.Clean(absB)
+	return filepath.Rel(absTarget, filepath.Clean(absPath))
 }
 
 // computeHash calculates the SHA-256 hash for the given file.

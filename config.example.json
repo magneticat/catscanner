@@ -13,11 +13,7 @@
     "smtp_user": "smtp_username",
     "smtp_pass": "smtp_password",
 
-    "exclude_dirs": [
-        "internal_data/attachments",
-        "internal_data/code_cache",
-        "internal_data/temp"
-    ],
+    "exclude_dirs": [],
 
     "whitelist": [
         "*.tmp",

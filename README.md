@@ -107,11 +107,7 @@ Edit `config.json` to match your environment:
     "smtp_port": "587",
     "smtp_user": "smtp_username",
     "smtp_pass": "smtp_password",
-    "exclude_dirs": [
-        "internal_data/attachments",
-        "internal_data/code_cache",
-        "internal_data/temp"
-    ],
+    "exclude_dirs": [],
     "whitelist": [
         "*.tmp",
         "cache/*",
@@ -150,7 +146,7 @@ These settings solve different problems. Do not treat them as interchangeable.
 | Alerts | Changes inside an excluded tree produce no log line and no email | Changes are logged as whitelisted; email is skipped |
 | Matching | Exact directory paths relative to `target_dir` (no globstar) | `filepath.Match` patterns against name, full path, and trailing sub-paths |
 
-Example for a XenForo-style tree (as used by sites such as Practical Machinist):
+Example for a XenForo-style tree:
 
 ```json
 "exclude_dirs": [
@@ -273,6 +269,7 @@ chmod +x test_integrity.sh
 | Error loading configuration / `exclude_dirs` rejected | Confirm the JSON is valid, required fields are set, and every `exclude_dirs` entry is a non-empty path relative to `target_dir` (not `.`, not absolute, and not escaping with `..`). Config errors exit 2. |
 | No email received | Check `email_method`, SMTP/mailcmd config, and the log file for errors. |
 | False positives from cache/temp | If the tree should not be scanned at all, add it to `exclude_dirs`. If you still want it hashed and logged, add a `whitelist` pattern instead. |
+| Unreadable file or broken symlink | Logged as skipped; the rest of the scan or baseline continues. |
 
 ## Security Considerations
 
@@ -282,6 +279,7 @@ chmod +x test_integrity.sh
 4. Keep the config file secure (contains SMTP credentials)
 5. Regenerate the integrity file after every legitimate deployment
 6. Email headers (From, To, Subject) are sanitized to prevent header injection when using SMTP or the mail command
+7. Exclude only trees that cannot execute code. A webshell dropped in an excluded directory will never be reported.
 
 ## Contributing
 
